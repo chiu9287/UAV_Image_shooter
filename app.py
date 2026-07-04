@@ -108,12 +108,13 @@ class RealSenseCamera:
             video_path = os.path.join(self.video_dir, 'recording.mp4')
             # GStreamer pipeline using x264enc (software) or hardware enc if available
             gst_pipeline = (
-                f"appsrc ! videoconvert ! video/x-raw,format=BGR ! "
+                f"appsrc ! videoconvert ! "
                 f"x264enc tune=zerolatency speed-preset=superfast ! mp4mux ! filesink location={video_path} sync=false"
             )
             writer = cv2.VideoWriter(gst_pipeline, cv2.CAP_GSTREAMER, 0, fps, (width, height), True)
             if writer.isOpened():
-                self.video_writer = writer
+                with self.lock:
+                    self.video_writer = writer
                 self.video_path = video_path
                 self.recording_width = width
                 self.recording_height = height
@@ -136,7 +137,8 @@ class RealSenseCamera:
             try:
                 writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
                 if writer.isOpened():
-                    self.video_writer = writer
+                    with self.lock:
+                        self.video_writer = writer
                     self.video_path = video_path
                     self.recording_width = width
                     self.recording_height = height
@@ -207,17 +209,29 @@ class RealSenseCamera:
 
             if self.recording_active and self.video_writer is not None:
                 try:
-                    if not self.video_writer.isOpened():
-                        print("Video writer is closed, trying to recover")
+                    with self.lock:
+                        writer = self.video_writer
+                        rw = self.recording_width
+                        rh = self.recording_height
+                    if writer is None or not writer.isOpened():
+                        print("Video writer is closed or None, stopping recording")
                         self.recording_active = False
                     else:
-                        ret = self.video_writer.write(frame)
-                        if not ret:
-                            print(f"Failed to write frame to video (shape={frame.shape}, dtype={frame.dtype})")
+                        # Ensure frame matches writer size
+                        if (frame.shape[1], frame.shape[0]) != (rw, rh):
+                            write_frame = cv2.resize(frame, (rw, rh), interpolation=cv2.INTER_AREA)
+                        else:
+                            write_frame = frame
+                        try:
+                            # VideoWriter.write() returns None in OpenCV Python bindings; rely on exceptions and isOpened
+                            writer.write(write_frame)
+                        except Exception as e:
+                            print(f"Failed to write frame to video (exception): {e}")
                             width, height, fps = self._fallback_recording_profile()
                             print(f"Trying fallback recording profile: {width}x{height}@{fps} fps")
                             if self._start_video_writer(width, height, fps):
-                                self.video_writer.write(frame)
+                                with self.lock:
+                                    self.video_writer.write(cv2.resize(frame, (self.recording_width, self.recording_height), interpolation=cv2.INTER_AREA))
                             else:
                                 print("Recording could not be recovered")
                                 self.recording_active = False
@@ -279,9 +293,13 @@ class RealSenseCamera:
         return folder
     def stop_recording(self):
         self.recording_active = False
-        if self.video_writer is not None:
-            self.video_writer.release()
-            self.video_writer = None
+        with self.lock:
+            if self.video_writer is not None:
+                try:
+                    self.video_writer.release()
+                except Exception:
+                    pass
+                self.video_writer = None
         folder = self.video_dir
         self.video_dir = None
         self.video_path = None
