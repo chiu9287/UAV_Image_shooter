@@ -103,27 +103,52 @@ class RealSenseCamera:
         if self.video_dir is None:
             return False
 
-        candidates = [
-            (os.path.join(self.video_dir, 'recording.mp4'), cv2.VideoWriter_fourcc(*'mp4v')),
-            (os.path.join(self.video_dir, 'recording.mp4'), cv2.VideoWriter_fourcc(*'avc1')),
-            (os.path.join(self.video_dir, 'recording.mp4'), cv2.VideoWriter_fourcc(*'H264')),
-            (os.path.join(self.video_dir, 'recording.mp4'), 0),
-        ]
-
-        for video_path, fourcc in candidates:
-            writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+        # First, try GStreamer pipeline writer (preferred on Jetson)
+        try:
+            video_path = os.path.join(self.video_dir, 'recording.mp4')
+            # GStreamer pipeline using x264enc (software) or hardware enc if available
+            gst_pipeline = (
+                f"appsrc ! videoconvert ! video/x-raw,format=BGR ! "
+                f"x264enc tune=zerolatency speed-preset=superfast ! mp4mux ! filesink location={video_path} sync=false"
+            )
+            writer = cv2.VideoWriter(gst_pipeline, cv2.CAP_GSTREAMER, 0, fps, (width, height), True)
             if writer.isOpened():
                 self.video_writer = writer
                 self.video_path = video_path
                 self.recording_width = width
                 self.recording_height = height
                 self.recording_fps = fps
-                print(f"Video writer ready: {width}x{height}@{fps} fps -> {video_path}")
+                print(f"GStreamer Video writer ready: {width}x{height}@{fps} fps -> {video_path}")
                 return True
-            print(f"Failed to open writer for {video_path} with {width}x{height}@{fps}")
+            else:
+                print("GStreamer writer failed to open, falling back to native writers")
+        except Exception as e:
+            print(f"GStreamer writer attempt failed: {e}")
+
+        # Fallback: try common fourcc writers (AVI containers more stable)
+        candidates = [
+            (os.path.join(self.video_dir, 'recording.avi'), cv2.VideoWriter_fourcc(*'MJPG')),
+            (os.path.join(self.video_dir, 'recording.avi'), cv2.VideoWriter_fourcc(*'XVID')),
+            (os.path.join(self.video_dir, 'recording.avi'), 0),
+        ]
+
+        for video_path, fourcc in candidates:
+            try:
+                writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+                if writer.isOpened():
+                    self.video_writer = writer
+                    self.video_path = video_path
+                    self.recording_width = width
+                    self.recording_height = height
+                    self.recording_fps = fps
+                    print(f"Video writer ready: {width}x{height}@{fps} fps -> {video_path}")
+                    return True
+                else:
+                    print(f"Failed to open writer for {video_path} with {width}x{height}@{fps}")
+            except Exception as e:
+                print(f"Error opening writer {video_path}: {e}")
 
         return False
-
     def _fallback_recording_profile(self):
         profiles = [
             (self.width, self.height, self.fps),
@@ -252,7 +277,6 @@ class RealSenseCamera:
             print(f"ERROR: VideoWriter failed to open for all candidates in {folder}")
             self.recording_active = False
         return folder
-
     def stop_recording(self):
         self.recording_active = False
         if self.video_writer is not None:
