@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 
 class RealSenseCamera:
-    def __init__(self, width=640, height=480, fps=60):
+    def __init__(self, width=1920, height=1080, fps=60):
         self.width = width
         self.height = height
         self.fps = fps
@@ -228,6 +228,26 @@ def api_image_file(folder_name, filename):
     safe_folder = os.path.basename(folder_name)
     safe_filename = os.path.basename(filename)
     folder = os.path.join(app.root_path, 'captures', 'image', safe_folder)
+    return send_from_directory(folder, safe_filename)
+
+
+@app.route('/api/videos/<path:folder_name>')
+def api_videos(folder_name):
+    safe_folder = os.path.basename(folder_name)
+    folder = os.path.join(app.root_path, 'captures', 'video', safe_folder)
+    if not os.path.isdir(folder):
+        return jsonify({'files': []}), 404
+
+    files = [f for f in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(('.mp4', '.avi', '.mov'))]
+    video_urls = [f"/api/video_file/{quote(safe_folder)}/{quote(f)}" for f in files]
+    return jsonify({'folder': safe_folder, 'files': files, 'video_urls': video_urls})
+
+
+@app.route('/api/video_file/<path:folder_name>/<path:filename>')
+def api_video_file(folder_name, filename):
+    safe_folder = os.path.basename(folder_name)
+    safe_filename = os.path.basename(filename)
+    folder = os.path.join(app.root_path, 'captures', 'video', safe_folder)
     return send_from_directory(folder, safe_filename)
 
 

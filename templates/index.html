@@ -53,6 +53,23 @@
       </div>
     </div>
 
+    <div class="panel">
+      <h3>瀏覽錄影檔案</h3>
+      <div class="controls">
+        <label for="videoFolderSelect">選擇錄影資料夾：</label>
+        <select id="videoFolderSelect"></select>
+      </div>
+      <div class="small" id="videoInfo">請選擇錄影資料夾</div>
+      <div style="margin-top:12px; display:flex; gap:12px;">
+        <div style="flex:1">
+          <ul id="videoFileList"></ul>
+        </div>
+        <div style="flex:2" class="preview">
+          <video id="videoPlayer" controls style="max-width:100%; max-height:420px;"></video>
+        </div>
+      </div>
+    </div>
+
     <script>
       const captureBtn = document.getElementById('captureBtn');
       const recordBtn = document.getElementById('recordBtn');
@@ -115,6 +132,8 @@
           for (const file of imageFiles) {
             const li = document.createElement('li');
             li.textContent = file;
+            li.style.cursor = 'pointer';
+            li.addEventListener('click', () => showImage(imageFiles.indexOf(file)));
             fileList.appendChild(li);
           }
         } else {
@@ -129,6 +148,61 @@
         currentIndex = (index + imageFiles.length) % imageFiles.length;
         galleryImage.src = `/api/image_file/${encodeURIComponent(folderSelect.value)}/${encodeURIComponent(imageFiles[currentIndex])}`;
       }
+
+      // Videos
+      const videoFolderSelect = document.getElementById('videoFolderSelect');
+      const videoFileList = document.getElementById('videoFileList');
+      const videoPlayer = document.getElementById('videoPlayer');
+
+      async function loadVideoFolders() {
+        const res = await fetch('/api/folders');
+        const data = await res.json();
+        videoFolderSelect.innerHTML = '';
+        if (data.video_folders.length > 0) {
+          for (const folder of data.video_folders) {
+            const opt = document.createElement('option');
+            opt.value = folder;
+            opt.textContent = folder;
+            videoFolderSelect.appendChild(opt);
+          }
+          await loadVideos(videoFolderSelect.value);
+        } else {
+          document.getElementById('videoInfo').textContent = '目前尚無錄影資料夾';
+          videoPlayer.src = '';
+          videoFileList.innerHTML = '';
+        }
+      }
+
+      async function loadVideos(folder) {
+        const res = await fetch(`/api/videos/${encodeURIComponent(folder)}`);
+        if (!res.ok) {
+          document.getElementById('videoInfo').textContent = '資料夾不存在或無檔案';
+          return;
+        }
+        const data = await res.json();
+        const files = data.files || [];
+        videoFileList.innerHTML = '';
+        if (files.length === 0) {
+          document.getElementById('videoInfo').textContent = `資料夾: ${data.folder}，目前沒有影片`;
+          videoPlayer.src = '';
+          return;
+        }
+        document.getElementById('videoInfo').textContent = `資料夾: ${data.folder}，共 ${files.length} 檔`;
+        for (const f of files) {
+          const li = document.createElement('li');
+          li.textContent = f;
+          li.style.cursor = 'pointer';
+          li.addEventListener('click', () => {
+            videoPlayer.src = `/api/video_file/${encodeURIComponent(folder)}/${encodeURIComponent(f)}`;
+            videoPlayer.load();
+            videoPlayer.play();
+          });
+          videoFileList.appendChild(li);
+        }
+      }
+
+      videoFolderSelect.addEventListener('change', () => loadVideos(videoFolderSelect.value));
+      loadVideoFolders();
 
       captureBtn.addEventListener('click', async () => {
         const action = captureBtn.textContent.includes('開始') ? 'start' : 'stop';
