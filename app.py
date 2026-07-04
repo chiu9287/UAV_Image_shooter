@@ -66,6 +66,24 @@ class RealSenseCamera:
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
 
+    def _normalize_frame(self, frame):
+        if frame is None:
+            return None
+        if frame.ndim == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.ndim == 3 and frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        elif frame.ndim == 3 and frame.shape[2] == 1:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        if frame.shape[1] != self.width or frame.shape[0] != self.height:
+            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.uint8)
+
+        return frame
+
     def _update(self):
         while self.running:
             if self.pipeline is None:
@@ -85,6 +103,7 @@ class RealSenseCamera:
                     cv2.putText(frame, f'TEST FRAME #{self.test_frame_counter}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                     cv2.putText(frame, 'No RealSense Camera Connected', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
+                frame = self._normalize_frame(frame)
                 with self.lock:
                     self.latest_frame = frame.copy()
                 self.test_frame_counter += 1
@@ -97,6 +116,7 @@ class RealSenseCamera:
                 continue
 
             frame = np.asanyarray(color_frame.get_data())
+            frame = self._normalize_frame(frame)
 
             with self.lock:
                 self.latest_frame = frame.copy()
@@ -115,10 +135,9 @@ class RealSenseCamera:
                         print(f"Video writer is closed, stopping recording")
                         self.recording_active = False
                     else:
-                        # Ensure frame is in BGR format for VideoWriter
                         ret = self.video_writer.write(frame)
                         if not ret:
-                            print(f"Failed to write frame to video")
+                            print(f"Failed to write frame to video (shape={frame.shape}, dtype={frame.dtype})")
                 except Exception as e:
                     print(f"Video write error: {e}")
                     self.recording_active = False
