@@ -1,4 +1,4 @@
 flask>=1.1.2
 opencv-python
 numpy
-pyrealsense2
+# pyrealsense2 is optional; install it only when the RealSense SDK is available

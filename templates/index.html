@@ -1,38 +1,160 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>UAV Image Capture</title>
     <style>
-      body { font-family: Arial, Helvetica, sans-serif; margin: 20px; }
-      #video { border: 1px solid #ccc; }
-      .controls { margin-top: 10px; }
-      button { padding: 8px 14px; margin-right: 8px; }
+      body { font-family: Arial, Helvetica, sans-serif; margin: 20px; background: #f5f7fb; }
+      .panel { background: #fff; padding: 16px; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+      #video { border: 1px solid #ccc; width: 100%; max-width: 640px; height: auto; }
+      .controls { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+      button { padding: 10px 16px; border: none; border-radius: 6px; color: white; cursor: pointer; font-weight: bold; }
+      .toggle-off { background: #2e7d32; }
+      .toggle-on { background: #c62828; }
+      .gallery { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+      select, input { padding: 8px; min-width: 220px; }
+      .preview { border: 1px solid #ddd; min-height: 300px; display: flex; align-items: center; justify-content: center; background: #fafafa; }
+      .preview img { max-width: 100%; max-height: 420px; }
+      .small { font-size: 0.9rem; color: #666; }
     </style>
   </head>
   <body>
-    <h2>UAV RealSense Live</h2>
-    <div>
-      <img id="video" src="/video_feed" width="640" height="480" alt="video feed">
+    <div class="panel">
+      <h2>UAV RealSense 即時畫面</h2>
+      <div>
+        <img id="video" src="/video_feed" alt="video feed">
+      </div>
+      <div class="controls">
+        <button id="captureBtn" class="toggle-off">開始拍照</button>
+        <button id="recordBtn" class="toggle-off">開始錄影</button>
+        <span id="status">狀態: 等待操作</span>
+      </div>
+      <div class="small">目前設定為 60 FPS</div>
     </div>
-    <div class="controls">
-      <button id="start">開始捕捉影像</button>
-      <button id="stop">停止捕捉影像</button>
-      <span id="status">狀態: 未捕捉</span>
+
+    <div class="panel">
+      <h3>瀏覽已拍攝影像</h3>
+      <div class="controls">
+        <label for="folderSelect">選擇資料夾：</label>
+        <select id="folderSelect"></select>
+        <button id="prevBtn" class="toggle-off">上一張</button>
+        <button id="nextBtn" class="toggle-off">下一張</button>
+      </div>
+      <div id="galleryInfo" class="small">請選擇資料夾</div>
+      <div class="gallery" style="margin-top: 12px;">
+        <div class="preview">
+          <img id="galleryImage" src="" alt="gallery preview">
+        </div>
+        <div>
+          <h4>資料夾內容</h4>
+          <ul id="fileList"></ul>
+        </div>
+      </div>
     </div>
 
     <script>
-      document.getElementById('start').addEventListener('click', async () => {
-        const res = await fetch('/start_capture', { method: 'POST' });
-        const j = await res.json();
-        document.getElementById('status').innerText = '狀態: 捕捉中 → ' + j.folder;
+      const captureBtn = document.getElementById('captureBtn');
+      const recordBtn = document.getElementById('recordBtn');
+      const statusLabel = document.getElementById('status');
+      const folderSelect = document.getElementById('folderSelect');
+      const galleryImage = document.getElementById('galleryImage');
+      const fileList = document.getElementById('fileList');
+      const galleryInfo = document.getElementById('galleryInfo');
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+      let imageFiles = [];
+      let currentIndex = 0;
+
+      function setToggle(button, active, onText, offText) {
+        if (active) {
+          button.className = 'toggle-on';
+          button.textContent = onText;
+        } else {
+          button.className = 'toggle-off';
+          button.textContent = offText;
+        }
+      }
+
+      async function refreshStatus() {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        setToggle(captureBtn, data.capture_active, '停止拍照', '開始拍照');
+        setToggle(recordBtn, data.recording_active, '停止錄影', '開始錄影');
+        statusLabel.textContent = `狀態: 拍照=${data.capture_active ? '開' : '關'} / 錄影=${data.recording_active ? '開' : '關'} / FPS=${data.fps}`;
+      }
+
+      async function loadFolders() {
+        const res = await fetch('/api/folders');
+        const data = await res.json();
+        folderSelect.innerHTML = '';
+        if (data.image_folders.length > 0) {
+          for (const folder of data.image_folders) {
+            const opt = document.createElement('option');
+            opt.value = folder;
+            opt.textContent = folder;
+            folderSelect.appendChild(opt);
+          }
+          await loadImages(folderSelect.value);
+        } else {
+          galleryInfo.textContent = '目前尚無拍照資料夾';
+          galleryImage.src = '';
+          fileList.innerHTML = '';
+        }
+      }
+
+      async function loadImages(folder) {
+        const res = await fetch(`/api/images/${encodeURIComponent(folder)}`);
+        const data = await res.json();
+        imageFiles = data.files || [];
+        currentIndex = 0;
+        if (imageFiles.length > 0) {
+          galleryInfo.textContent = `資料夾: ${data.folder}，共 ${imageFiles.length} 張`;
+          showImage(0);
+          fileList.innerHTML = '';
+          for (const file of imageFiles) {
+            const li = document.createElement('li');
+            li.textContent = file;
+            fileList.appendChild(li);
+          }
+        } else {
+          galleryInfo.textContent = `資料夾: ${data.folder}，目前沒有影像`;
+          galleryImage.src = '';
+          fileList.innerHTML = '';
+        }
+      }
+
+      function showImage(index) {
+        if (!imageFiles.length) return;
+        currentIndex = (index + imageFiles.length) % imageFiles.length;
+        galleryImage.src = `/api/image_file/${encodeURIComponent(folderSelect.value)}/${encodeURIComponent(imageFiles[currentIndex])}`;
+      }
+
+      captureBtn.addEventListener('click', async () => {
+        const action = captureBtn.textContent.includes('開始') ? 'start' : 'stop';
+        const res = await fetch(action === 'start' ? '/start_capture' : '/stop_capture', { method: 'POST' });
+        const data = await res.json();
+        statusLabel.textContent = `狀態: ${data.status === 'started' ? '拍照中' : '停止拍照'} → ${data.folder}`;
+        await refreshStatus();
+        if (action === 'start') {
+          await loadFolders();
+        }
       });
-      document.getElementById('stop').addEventListener('click', async () => {
-        const res = await fetch('/stop_capture', { method: 'POST' });
-        const j = await res.json();
-        document.getElementById('status').innerText = '狀態: 停止，儲存於 ' + j.folder;
+
+      recordBtn.addEventListener('click', async () => {
+        const action = recordBtn.textContent.includes('開始') ? 'start' : 'stop';
+        const res = await fetch(action === 'start' ? '/start_recording' : '/stop_recording', { method: 'POST' });
+        const data = await res.json();
+        statusLabel.textContent = `狀態: ${data.status === 'recording' ? '錄影中' : '停止錄影'} → ${data.folder}`;
+        await refreshStatus();
       });
+
+      folderSelect.addEventListener('change', () => loadImages(folderSelect.value));
+      prevBtn.addEventListener('click', () => showImage(currentIndex - 1));
+      nextBtn.addEventListener('click', () => showImage(currentIndex + 1));
+
+      refreshStatus();
+      loadFolders();
     </script>
   </body>
 </html>
