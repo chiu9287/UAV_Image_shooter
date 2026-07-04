@@ -35,6 +35,10 @@ class RealSenseCamera:
         self.video_writer = None
         self.video_path = None
         self.image_counter = 0
+        self.recording_width = self.width
+        self.recording_height = self.height
+        self.recording_fps = self.fps
+        self._recording_fallback_index = 0
 
         if rs is not None:
             try:
@@ -84,6 +88,53 @@ class RealSenseCamera:
 
         return frame
 
+    def _start_video_writer(self, width=None, height=None, fps=None):
+        width = width or self.recording_width or self.width
+        height = height or self.recording_height or self.height
+        fps = fps or self.recording_fps or self.fps
+
+        if self.video_writer is not None:
+            try:
+                self.video_writer.release()
+            except Exception:
+                pass
+            self.video_writer = None
+
+        if self.video_dir is None:
+            return False
+
+        candidates = [
+            (os.path.join(self.video_dir, 'recording.mp4'), cv2.VideoWriter_fourcc(*'mp4v')),
+            (os.path.join(self.video_dir, 'recording.mp4'), cv2.VideoWriter_fourcc(*'avc1')),
+            (os.path.join(self.video_dir, 'recording.mp4'), cv2.VideoWriter_fourcc(*'H264')),
+            (os.path.join(self.video_dir, 'recording.mp4'), 0),
+        ]
+
+        for video_path, fourcc in candidates:
+            writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+            if writer.isOpened():
+                self.video_writer = writer
+                self.video_path = video_path
+                self.recording_width = width
+                self.recording_height = height
+                self.recording_fps = fps
+                print(f"Video writer ready: {width}x{height}@{fps} fps -> {video_path}")
+                return True
+            print(f"Failed to open writer for {video_path} with {width}x{height}@{fps}")
+
+        return False
+
+    def _fallback_recording_profile(self):
+        profiles = [
+            (self.width, self.height, self.fps),
+            (1280, 720, 20),
+            (960, 540, 15),
+            (640, 480, 10),
+        ]
+        idx = self._recording_fallback_index % len(profiles)
+        self._recording_fallback_index += 1
+        return profiles[idx]
+
     def _update(self):
         while self.running:
             if self.pipeline is None:
@@ -132,12 +183,19 @@ class RealSenseCamera:
             if self.recording_active and self.video_writer is not None:
                 try:
                     if not self.video_writer.isOpened():
-                        print(f"Video writer is closed, stopping recording")
+                        print("Video writer is closed, trying to recover")
                         self.recording_active = False
                     else:
                         ret = self.video_writer.write(frame)
                         if not ret:
                             print(f"Failed to write frame to video (shape={frame.shape}, dtype={frame.dtype})")
+                            width, height, fps = self._fallback_recording_profile()
+                            print(f"Trying fallback recording profile: {width}x{height}@{fps} fps")
+                            if self._start_video_writer(width, height, fps):
+                                self.video_writer.write(frame)
+                            else:
+                                print("Recording could not be recovered")
+                                self.recording_active = False
                 except Exception as e:
                     print(f"Video write error: {e}")
                     self.recording_active = False
@@ -173,28 +231,26 @@ class RealSenseCamera:
         folder = os.path.join(base_dir, ts)
         os.makedirs(folder, exist_ok=True)
 
-        candidates = [
-            (os.path.join(folder, 'recording.mp4'), cv2.VideoWriter_fourcc(*'mp4v')),
-            (os.path.join(folder, 'recording.mp4'), cv2.VideoWriter_fourcc(*'avc1')),
-            (os.path.join(folder, 'recording.mp4'), cv2.VideoWriter_fourcc(*'H264')),
-            (os.path.join(folder, 'recording.mp4'), 0),
-        ]
-
         self.video_writer = None
         self.video_path = None
-        for video_path, fourcc in candidates:
-            self.video_writer = cv2.VideoWriter(video_path, fourcc, self.fps, (self.width, self.height))
-            if self.video_writer.isOpened():
-                self.video_path = video_path
-                print(f"Video recording started at {video_path}")
+        self.video_dir = folder
+        self._recording_fallback_index = 0
+        self.recording_active = True
+
+        profiles = [
+            (self.width, self.height, self.fps),
+            (1280, 720, 20),
+            (960, 540, 15),
+            (640, 480, 10),
+        ]
+        for width, height, fps in profiles:
+            if self._start_video_writer(width, height, fps):
+                print(f"Video recording started at {self.video_path} ({width}x{height}@{fps})")
                 break
-            else:
-                print(f"Failed to open writer for {video_path}")
 
         if self.video_writer is None or not self.video_writer.isOpened():
             print(f"ERROR: VideoWriter failed to open for all candidates in {folder}")
-        self.video_dir = folder
-        self.recording_active = True
+            self.recording_active = False
         return folder
 
     def stop_recording(self):
