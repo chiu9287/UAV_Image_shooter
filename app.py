@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 
 class RealSenseCamera:
-    def __init__(self, width=1920, height=1080, fps=30):
+    def __init__(self, width=1920, height=1080, fps=60):
         self.width = width
         self.height = height
         self.fps = fps
@@ -108,9 +108,12 @@ class RealSenseCamera:
         os.makedirs(base_dir, exist_ok=True)
         folder = os.path.join(base_dir, ts)
         os.makedirs(folder, exist_ok=True)
-        video_path = os.path.join(folder, 'recording.mp4')
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_path = os.path.join(folder, 'recording.avi')
+        # Use MJPEG codec (most widely supported)
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         self.video_writer = cv2.VideoWriter(video_path, fourcc, self.fps, (self.width, self.height))
+        if not self.video_writer.isOpened():
+            print(f"Warning: VideoWriter failed to open for {video_path}")
         self.video_dir = folder
         self.video_path = video_path
         self.recording_active = True
@@ -238,7 +241,7 @@ def api_videos(folder_name):
     if not os.path.isdir(folder):
         return jsonify({'files': []}), 404
 
-    files = [f for f in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(('.mp4', '.avi', '.mov'))]
+    files = [f for f in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))]
     video_urls = [f"/api/video_file/{quote(safe_folder)}/{quote(f)}" for f in files]
     return jsonify({'folder': safe_folder, 'files': files, 'video_urls': video_urls})
 
