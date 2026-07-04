@@ -16,15 +16,17 @@ app = Flask(__name__)
 
 
 class RealSenseCamera:
-    def __init__(self, width=1920, height=1080, fps=60):
+    def __init__(self, width=1920, height=1080, fps=30):
         self.width = width
         self.height = height
         self.fps = fps
         self.pipeline = None
+        self.webcam = None
         self.thread = None
         self.running = False
         self.latest_frame = None
         self.lock = threading.Lock()
+        self.test_frame_counter = 0  # for generating test frames
 
         self.image_active = False
         self.recording_active = False
@@ -35,10 +37,30 @@ class RealSenseCamera:
         self.image_counter = 0
 
         if rs is not None:
-            self.pipeline = rs.pipeline()
-            cfg = rs.config()
-            cfg.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
-            self.pipeline.start(cfg)
+            try:
+                self.pipeline = rs.pipeline()
+                cfg = rs.config()
+                cfg.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
+                self.pipeline.start(cfg)
+                print("RealSense camera connected successfully")
+            except Exception as e:
+                print(f"Failed to initialize RealSense: {e}")
+                self.pipeline = None
+
+        if self.pipeline is None:
+            try:
+                self.webcam = cv2.VideoCapture(0)
+                if self.webcam.isOpened():
+                    self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    self.webcam.set(cv2.CAP_PROP_FPS, self.fps)
+                    print("Webcam available - using laptop camera")
+                else:
+                    self.webcam = None
+                    print("No webcam detected - using synthetic test mode")
+            except Exception as e:
+                self.webcam = None
+                print(f"Webcam initialization failed: {e}")
 
         self.running = True
         self.thread = threading.Thread(target=self._update, daemon=True)
@@ -47,10 +69,25 @@ class RealSenseCamera:
     def _update(self):
         while self.running:
             if self.pipeline is None:
-                frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                cv2.putText(frame, 'No RealSense (pyrealsense2 missing)', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                frame = None
+                if self.webcam is not None and self.webcam.isOpened():
+                    ok, frame = self.webcam.read()
+                    if not ok or frame is None:
+                        frame = None
+
+                if frame is None:
+                    # Generate synthetic test frame when no webcam or read failed
+                    frame = np.ones((self.height, self.width, 3), dtype=np.uint8) * 50
+                    color_idx = (self.test_frame_counter // self.fps) % 5
+                    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
+                    color = colors[color_idx]
+                    cv2.rectangle(frame, (100, 100), (100 + 200, 100 + 200), color, -1)
+                    cv2.putText(frame, f'TEST FRAME #{self.test_frame_counter}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    cv2.putText(frame, 'No RealSense Camera Connected', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
                 with self.lock:
-                    self.latest_frame = frame
+                    self.latest_frame = frame.copy()
+                self.test_frame_counter += 1
                 time.sleep(1.0 / max(1, self.fps))
                 continue
 
@@ -74,9 +111,17 @@ class RealSenseCamera:
 
             if self.recording_active and self.video_writer is not None:
                 try:
-                    self.video_writer.write(frame)
-                except Exception:
-                    pass
+                    if not self.video_writer.isOpened():
+                        print(f"Video writer is closed, stopping recording")
+                        self.recording_active = False
+                    else:
+                        # Ensure frame is in BGR format for VideoWriter
+                        ret = self.video_writer.write(frame)
+                        if not ret:
+                            print(f"Failed to write frame to video")
+                except Exception as e:
+                    print(f"Video write error: {e}")
+                    self.recording_active = False
 
     def get_frame_bytes(self):
         with self.lock:
@@ -108,14 +153,28 @@ class RealSenseCamera:
         os.makedirs(base_dir, exist_ok=True)
         folder = os.path.join(base_dir, ts)
         os.makedirs(folder, exist_ok=True)
-        video_path = os.path.join(folder, 'recording.avi')
-        # Use MJPEG codec (most widely supported)
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        self.video_writer = cv2.VideoWriter(video_path, fourcc, self.fps, (self.width, self.height))
-        if not self.video_writer.isOpened():
-            print(f"Warning: VideoWriter failed to open for {video_path}")
+
+        candidates = [
+            (os.path.join(folder, 'recording.mp4'), cv2.VideoWriter_fourcc(*'mp4v')),
+            (os.path.join(folder, 'recording.mp4'), cv2.VideoWriter_fourcc(*'avc1')),
+            (os.path.join(folder, 'recording.mp4'), cv2.VideoWriter_fourcc(*'H264')),
+            (os.path.join(folder, 'recording.mp4'), 0),
+        ]
+
+        self.video_writer = None
+        self.video_path = None
+        for video_path, fourcc in candidates:
+            self.video_writer = cv2.VideoWriter(video_path, fourcc, self.fps, (self.width, self.height))
+            if self.video_writer.isOpened():
+                self.video_path = video_path
+                print(f"Video recording started at {video_path}")
+                break
+            else:
+                print(f"Failed to open writer for {video_path}")
+
+        if self.video_writer is None or not self.video_writer.isOpened():
+            print(f"ERROR: VideoWriter failed to open for all candidates in {folder}")
         self.video_dir = folder
-        self.video_path = video_path
         self.recording_active = True
         return folder
 
@@ -141,6 +200,12 @@ class RealSenseCamera:
                 self.pipeline.stop()
             except Exception:
                 pass
+        if self.webcam is not None:
+            try:
+                self.webcam.release()
+            except Exception:
+                pass
+            self.webcam = None
 
 
 camera = RealSenseCamera()
