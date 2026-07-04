@@ -16,7 +16,7 @@ app = Flask(__name__)
 
 
 class RealSenseCamera:
-    def __init__(self, width=1920, height=1080, fps=60):
+    def __init__(self, width=1920, height=1080, fps=30):
         self.width = width
         self.height = height
         self.fps = fps
