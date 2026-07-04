@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>UAV Image Capture</title>
+    <style>
+      body { font-family: Arial, Helvetica, sans-serif; margin: 20px; }
+      #video { border: 1px solid #ccc; }
+      .controls { margin-top: 10px; }
+      button { padding: 8px 14px; margin-right: 8px; }
+    </style>
+  </head>
+  <body>
+    <h2>UAV RealSense Live</h2>
+    <div>
+      <img id="video" src="/video_feed" width="640" height="480" alt="video feed">
+    </div>
+    <div class="controls">
+      <button id="start">開始捕捉影像</button>
+      <button id="stop">停止捕捉影像</button>
+      <span id="status">狀態: 未捕捉</span>
+    </div>
+
+    <script>
+      document.getElementById('start').addEventListener('click', async () => {
+        const res = await fetch('/start_capture', { method: 'POST' });
+        const j = await res.json();
+        document.getElementById('status').innerText = '狀態: 捕捉中 → ' + j.folder;
+      });
+      document.getElementById('stop').addEventListener('click', async () => {
+        const res = await fetch('/stop_capture', { method: 'POST' });
+        const j = await res.json();
+        document.getElementById('status').innerText = '狀態: 停止，儲存於 ' + j.folder;
+      });
+    </script>
+  </body>
+</html>
