@@ -27,6 +27,15 @@ class RealSenseCamera:
         self.latest_frame = None
         self.lock = threading.Lock()
         self.test_frame_counter = 0  # for generating test frames
+        self.last_reconnect_attempt = 0.0
+        self.reconnect_cooldown = 2.0
+        self.preview_width = 480
+        self.preview_height = 270
+        self.preview_fps = 20
+        self.jpeg_quality = 55
+        self.preview_frame = None
+        self.preview_bytes = None
+        self.preview_last_sent_at = 0.0
 
         self.image_active = False
         self.recording_active = False
@@ -40,35 +49,47 @@ class RealSenseCamera:
         self.recording_fps = self.fps
         self._recording_fallback_index = 0
 
-        if rs is not None:
-            try:
-                self.pipeline = rs.pipeline()
-                cfg = rs.config()
-                cfg.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
-                self.pipeline.start(cfg)
-                print("RealSense camera connected successfully")
-            except Exception as e:
-                print(f"Failed to initialize RealSense: {e}")
-                self.pipeline = None
-
-        if self.pipeline is None:
-            try:
-                self.webcam = cv2.VideoCapture(0)
-                if self.webcam.isOpened():
-                    self.webcam.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                    self.webcam.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                    self.webcam.set(cv2.CAP_PROP_FPS, self.fps)
-                    print("Webcam available - using laptop camera")
-                else:
-                    self.webcam = None
-                    print("No webcam detected - using synthetic test mode")
-            except Exception as e:
-                self.webcam = None
-                print(f"Webcam initialization failed: {e}")
+        self._initialize_realsense_pipeline()
 
         self.running = True
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
+
+    def _initialize_realsense_pipeline(self):
+        if rs is None:
+            print("pyrealsense2 is not available")
+            self.pipeline = None
+            return False
+
+        if self.pipeline is not None:
+            try:
+                self.pipeline.stop()
+            except Exception:
+                pass
+            self.pipeline = None
+
+        try:
+            pipeline = rs.pipeline()
+            cfg = rs.config()
+            cfg.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
+            pipeline.start(cfg)
+            self.pipeline = pipeline
+            self.last_reconnect_attempt = 0.0
+            print("RealSense camera connected successfully")
+            return True
+        except Exception as e:
+            self.pipeline = None
+            print(f"RealSense initialization failed: {e}")
+            return False
+
+    def _ensure_realsense_pipeline(self):
+        now = time.time()
+        if self.pipeline is not None:
+            return True
+        if now - self.last_reconnect_attempt < self.reconnect_cooldown:
+            return False
+        self.last_reconnect_attempt = now
+        return self._initialize_realsense_pipeline()
 
     def _normalize_frame(self, frame):
         if frame is None:
@@ -162,33 +183,77 @@ class RealSenseCamera:
         self._recording_fallback_index += 1
         return profiles[idx]
 
+    def _handle_realsense_frame_error(self, error):
+        error_text = str(error).lower()
+        if self.pipeline is None:
+            return False
+
+        if (
+            "frame didn't arrive" in error_text
+            or "wait_for_frames" in error_text
+            or "timed out" in error_text
+            or "disconnected" in error_text
+            or "not available" in error_text
+        ):
+            print(f"RealSense frame timeout or read error: {error}")
+            try:
+                self.pipeline.stop()
+            except Exception:
+                pass
+            self.pipeline = None
+            self._initialize_realsense_pipeline()
+            return True
+
+        return False
+
+    def _prepare_preview_frame(self, frame):
+        if frame is None:
+            self.preview_frame = None
+            self.preview_bytes = None
+            return
+
+        normalized = self._normalize_frame(frame)
+        if normalized is None:
+            self.preview_frame = None
+            self.preview_bytes = None
+            return
+
+        if normalized.shape[1] != self.preview_width or normalized.shape[0] != self.preview_height:
+            resized = cv2.resize(normalized, (self.preview_width, self.preview_height), interpolation=cv2.INTER_AREA)
+        else:
+            resized = normalized
+
+        self.preview_frame = resized
+        if self.preview_frame.dtype != np.uint8:
+            self.preview_frame = self.preview_frame.astype(np.uint8)
+
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+        _, jpg = cv2.imencode('.jpg', self.preview_frame, encode_params)
+        self.preview_bytes = jpg.tobytes() if jpg is not None else None
+
+    def _get_idle_frame(self):
+        return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+
     def _update(self):
         while self.running:
             if self.pipeline is None:
-                frame = None
-                if self.webcam is not None and self.webcam.isOpened():
-                    ok, frame = self.webcam.read()
-                    if not ok or frame is None:
-                        frame = None
+                if not self._ensure_realsense_pipeline():
+                    frame = self._get_idle_frame()
+                    frame = self._normalize_frame(frame)
+                    with self.lock:
+                        self.latest_frame = frame.copy()
+                    self.test_frame_counter += 1
+                    time.sleep(0.2)
+                    continue
 
-                if frame is None:
-                    # Generate synthetic test frame when no webcam or read failed
-                    frame = np.ones((self.height, self.width, 3), dtype=np.uint8) * 50
-                    color_idx = (self.test_frame_counter // self.fps) % 5
-                    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
-                    color = colors[color_idx]
-                    cv2.rectangle(frame, (100, 100), (100 + 200, 100 + 200), color, -1)
-                    cv2.putText(frame, f'TEST FRAME #{self.test_frame_counter}', (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                    cv2.putText(frame, 'No RealSense Camera Connected', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-
-                frame = self._normalize_frame(frame)
-                with self.lock:
-                    self.latest_frame = frame.copy()
-                self.test_frame_counter += 1
-                time.sleep(1.0 / max(1, self.fps))
+            try:
+                frames = self.pipeline.wait_for_frames()
+            except Exception as exc:
+                if self._handle_realsense_frame_error(exc):
+                    continue
+                print(f"Unexpected RealSense read error: {exc}")
                 continue
 
-            frames = self.pipeline.wait_for_frames()
             color_frame = frames.get_color_frame()
             if not color_frame:
                 continue
@@ -198,6 +263,7 @@ class RealSenseCamera:
 
             with self.lock:
                 self.latest_frame = frame.copy()
+                self._prepare_preview_frame(frame)
 
             if self.image_active and self.image_dir is not None:
                 filename = os.path.join(self.image_dir, f"{self.image_counter:06d}.jpg")
@@ -240,10 +306,26 @@ class RealSenseCamera:
                     self.recording_active = False
 
     def get_frame_bytes(self):
+        if not hasattr(self, 'preview_bytes'):
+            self.preview_bytes = None
+        if not hasattr(self, 'preview_frame'):
+            self.preview_frame = None
+        if not hasattr(self, 'preview_last_sent_at'):
+            self.preview_last_sent_at = 0.0
+        if not hasattr(self, 'preview_fps'):
+            self.preview_fps = 10
         with self.lock:
-            if self.latest_frame is None:
+            if self.preview_bytes is not None and self.preview_frame is not None:
+                now = time.time()
+                if now - self.preview_last_sent_at >= 1.0 / max(1, self.preview_fps):
+                    self.preview_last_sent_at = now
+                    return self.preview_bytes
                 return None
-            ret, jpeg = cv2.imencode('.jpg', self.latest_frame)
+
+            frame = self.latest_frame
+            if frame is None:
+                frame = self._get_idle_frame()
+            ret, jpeg = cv2.imencode('.jpg', frame)
             if not ret:
                 return None
             return jpeg.tobytes()
@@ -325,7 +407,14 @@ class RealSenseCamera:
             self.webcam = None
 
 
-camera = RealSenseCamera()
+camera = None
+
+
+def get_camera():
+    global camera
+    if camera is None:
+        camera = RealSenseCamera()
+    return camera
 
 
 @app.route('/')
@@ -334,10 +423,11 @@ def index():
 
 
 def gen_frames():
+    cam = get_camera()
     while True:
-        frame = camera.get_frame_bytes()
+        frame = cam.get_frame_bytes()
         if frame is None:
-            time.sleep(0.05)
+            time.sleep(0.03)
             continue
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
@@ -350,34 +440,35 @@ def video_feed():
 
 @app.route('/start_capture', methods=['POST'])
 def start_capture():
-    folder = camera.start_capture()
+    folder = get_camera().start_capture()
     return jsonify({'status': 'started', 'folder': folder})
 
 
 @app.route('/stop_capture', methods=['POST'])
 def stop_capture():
-    folder = camera.stop_capture()
+    folder = get_camera().stop_capture()
     return jsonify({'status': 'stopped', 'folder': folder})
 
 
 @app.route('/start_recording', methods=['POST'])
 def start_recording():
-    folder = camera.start_recording()
+    folder = get_camera().start_recording()
     return jsonify({'status': 'recording', 'folder': folder})
 
 
 @app.route('/stop_recording', methods=['POST'])
 def stop_recording():
-    folder = camera.stop_recording()
+    folder = get_camera().stop_recording()
     return jsonify({'status': 'stopped', 'folder': folder})
 
 
 @app.route('/api/status')
 def api_status():
+    cam = get_camera()
     return jsonify({
-        'capture_active': camera.image_active,
-        'recording_active': camera.recording_active,
-        'fps': camera.fps,
+        'capture_active': cam.image_active,
+        'recording_active': cam.recording_active,
+        'fps': cam.fps,
     })
 
 
@@ -437,7 +528,9 @@ def api_video_file(folder_name, filename):
 
 
 if __name__ == '__main__':
+    cam = get_camera()
     try:
         app.run(host='0.0.0.0', port=5000, threaded=True)
     finally:
-        camera.shutdown()
+        if cam is not None:
+            cam.shutdown()

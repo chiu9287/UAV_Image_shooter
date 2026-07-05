@@ -12,7 +12,7 @@
       button { padding: 10px 16px; border: none; border-radius: 6px; color: white; cursor: pointer; font-weight: bold; }
       .toggle-off { background: #2e7d32; }
       .toggle-on { background: #c62828; }
-      .gallery { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; }
+      .gallery { display: flex; flex-direction: column; gap: 12px; }
       select, input { padding: 8px; min-width: 220px; }
       .preview { border: 1px solid #ddd; min-height: 300px; display: flex; align-items: center; justify-content: center; background: #fafafa; }
       .preview img { max-width: 100%; max-height: 420px; }
@@ -46,9 +46,10 @@
         <div class="preview">
           <img id="galleryImage" src="" alt="gallery preview">
         </div>
-        <div>
-          <h4>資料夾內容</h4>
-          <ul id="fileList"></ul>
+        <div style="margin-top: 8px;">
+          <h4 style="margin-bottom: 6px;">影像選擇</h4>
+          <label for="imageSelect">選擇照片：</label>
+          <select id="imageSelect" style="margin-top: 8px; width: 100%;"></select>
         </div>
       </div>
     </div>
@@ -76,10 +77,10 @@
       const statusLabel = document.getElementById('status');
       const folderSelect = document.getElementById('folderSelect');
       const galleryImage = document.getElementById('galleryImage');
-      const fileList = document.getElementById('fileList');
       const galleryInfo = document.getElementById('galleryInfo');
       const prevBtn = document.getElementById('prevBtn');
       const nextBtn = document.getElementById('nextBtn');
+      const imageSelect = document.getElementById('imageSelect');
       let imageFiles = [];
       let currentIndex = 0;
 
@@ -116,7 +117,7 @@
         } else {
           galleryInfo.textContent = '目前尚無拍照資料夾';
           galleryImage.src = '';
-          fileList.innerHTML = '';
+          imageSelect.innerHTML = '';
         }
       }
 
@@ -125,28 +126,28 @@
         const data = await res.json();
         imageFiles = data.files || [];
         currentIndex = 0;
+        imageSelect.innerHTML = '';
         if (imageFiles.length > 0) {
           galleryInfo.textContent = `資料夾: ${data.folder}，共 ${imageFiles.length} 張`;
-          showImage(0);
-          fileList.innerHTML = '';
           for (const file of imageFiles) {
-            const li = document.createElement('li');
-            li.textContent = file;
-            li.style.cursor = 'pointer';
-            li.addEventListener('click', () => showImage(imageFiles.indexOf(file)));
-            fileList.appendChild(li);
+            const opt = document.createElement('option');
+            opt.value = file;
+            opt.textContent = file;
+            imageSelect.appendChild(opt);
           }
+          showImage(0);
         } else {
           galleryInfo.textContent = `資料夾: ${data.folder}，目前沒有影像`;
           galleryImage.src = '';
-          fileList.innerHTML = '';
         }
       }
 
       function showImage(index) {
         if (!imageFiles.length) return;
         currentIndex = (index + imageFiles.length) % imageFiles.length;
-        galleryImage.src = `/api/image_file/${encodeURIComponent(folderSelect.value)}/${encodeURIComponent(imageFiles[currentIndex])}`;
+        const file = imageFiles[currentIndex];
+        galleryImage.src = `/api/image_file/${encodeURIComponent(folderSelect.value)}/${encodeURIComponent(file)}`;
+        imageSelect.value = file;
       }
 
       // Videos
@@ -224,6 +225,12 @@
       });
 
       folderSelect.addEventListener('change', () => loadImages(folderSelect.value));
+      imageSelect.addEventListener('change', () => {
+        const selectedIndex = imageFiles.indexOf(imageSelect.value);
+        if (selectedIndex >= 0) {
+          showImage(selectedIndex);
+        }
+      });
       prevBtn.addEventListener('click', () => showImage(currentIndex - 1));
       nextBtn.addEventListener('click', () => showImage(currentIndex + 1));
 
